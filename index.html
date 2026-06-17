@@ -163,6 +163,8 @@
   .fitem .ic{font-size:13px;color:#7fd8c6;width:16px;text-align:center;line-height:1}
   .fitem.missing{color:#f5a96e}
   .fitem.missing .ic{color:#f5a96e}
+  .fitem.binary{opacity:.78}
+  .fitem.binary small{color:#6f968c;font-style:italic}
   .fitem small{margin-left:auto;color:#8fb3ab;font-size:10px}
 
   /* ---------- editor header ---------- */
@@ -231,6 +233,17 @@
   .preview .ph .big{font-family:var(--serif);font-size:21px;color:var(--ink)}
   .preview .ph code{font-family:var(--mono);font-size:12px;background:#cfc8b5;padding:2px 6px;border-radius:4px}
   .pdfframe{flex:1;border:0;width:100%;background:#cfc8b5;min-height:0}
+  #pdfOpen{
+    position:absolute;inset:var(--head-h) 0 0 0;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+    background:#dad3c2;color:#5d6660;text-align:center;padding:24px;z-index:4;
+  }
+  #pdfOpen p{margin:0;font-size:13px;max-width:280px;line-height:1.5}
+  #pdfOpen a{
+    background:var(--tex);color:#fff;text-decoration:none;font-weight:700;font-size:14px;
+    padding:11px 26px;border-radius:999px;letter-spacing:.02em;
+  }
+  #pdfOpen a:active{transform:translateY(1px)}
 
   /* ---------- log (overlay opaco sobre o PDF) ---------- */
   #log{
@@ -329,6 +342,10 @@
               <button class="dd-item" id="btnLogin"><i data-lucide="log-in"></i>Entrar com Google</button>
             </div>
           </div>
+          <!-- Importar arquivo (imagem, .tex, etc.) -->
+          <button class="ibtn" id="btnImportFile" title="Importar arquivo (imagem, .tex…)">
+            <i data-lucide="file-up"></i>
+          </button>
           <!-- Importar ZIP: folder-archive + arrow-up-to-line -->
           <button class="ibtn" id="btnImport" title="Importar .zip">
             <span class="ic-stack ic-zip">
@@ -389,6 +406,13 @@
         <div>Primeira vez? Entre com Google e configure o servidor no menu do GitHub.</div>
       </div>
       <iframe class="pdfframe" id="pdfframe" style="display:none"></iframe>
+      <div id="pdfOpen" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:46px;height:46px;opacity:.55">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+        </svg>
+        <p>Pré-visualização embutida não é suportada neste navegador.</p>
+        <a href="#" target="_blank" rel="noopener">Abrir PDF</a>
+      </div>
       <div id="log"></div>
     </section>
   </div>
@@ -402,6 +426,7 @@
 
 <div class="toast" id="toast"></div>
 <input type="file" id="zipInput" accept=".zip" style="display:none">
+<input type="file" id="fileInput" multiple style="display:none">
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/stex/stex.min.js"></script>
@@ -507,6 +532,7 @@ function fileIcon(p,missing){
   if(p.endsWith(".tex")) return "🗒";
   if(p.endsWith(".bib")) return "📖";
   if(p.endsWith(".cls")||p.endsWith(".sty")) return "⚙";
+  if(/\.(png|jpe?g|gif|webp|bmp|svg|eps|pdf)$/i.test(p)) return "🖼";
   return "·";
 }
 
@@ -520,16 +546,23 @@ function buildTree(){
     (groups[folder]||(groups[folder]=[])).push(p);
   };
   Object.keys(files).forEach(add);
-  REFERENCED.forEach(p=>{if(!(p in files))add(p);});
+  Object.keys(binaries).forEach(add);
+  REFERENCED.forEach(p=>{if(!(p in files)&&!(p in binaries))add(p);});
 
+  const isBin=(p)=>(p in binaries);
   const addItem=(p)=>{
-    const missing=!(p in files);
+    const bin=isBin(p);
+    const missing=!(p in files)&&!bin;
     const el=document.createElement("div");
-    el.className="fitem"+(p===current?" active":"")+(missing?" missing":"");
+    el.className="fitem"+(p===current?" active":"")+(missing?" missing":"")+(bin?" binary":"");
     const ic=fileIcon(p,missing);
     el.innerHTML=`<span class="ic">${ic}</span><span>${basename(p)}</span>`+
-      (missing?`<small>ausente</small>`:``);;
-    el.onclick=()=>{ if(missing){ if(confirm(`Criar ${p}? Um \\input aponta para ele, mas o arquivo não existe.`)){ files[p]="% "+p+"\n"; openFile(p); buildTree(); setDirty(true);} return;} openFile(p); };
+      (missing?`<small>ausente</small>`:(bin?`<small>recurso</small>`:``));
+    el.onclick=()=>{
+      if(bin){ toast(basename(p)+" — recurso (imagem/binário), não editável"); return; }
+      if(missing){ if(confirm(`Criar ${p}? Um \\input aponta para ele, mas o arquivo não existe.`)){ files[p]="% "+p+"\n"; openFile(p); buildTree(); setDirty(true);} return;}
+      openFile(p);
+    };
     tree.appendChild(el);
   };
 
@@ -620,10 +653,27 @@ function notify(title,body){
     Notification.requestPermission().then(p=>{if(p==="granted")new Notification(title,{body});});
 }
 
+let lastPdfUrl=null;
 function showPdfBlob(blob){
+  if(lastPdfUrl){ try{URL.revokeObjectURL(lastPdfUrl);}catch(_){} }
   const url=URL.createObjectURL(blob);
+  lastPdfUrl=url;
   $("#previewPh").style.display="none";
-  const f=$("#pdfframe");f.style.display="block";f.src=url;
+  const f=$("#pdfframe");
+  // tenta exibir embutido (funciona no desktop)
+  f.style.display="block";f.src=url;
+  // fallback pra tablet/celular: muitos navegadores não renderizam PDF via iframe/blob.
+  // mostramos um botão "Abrir PDF" que navega na própria aba (não é bloqueado como pop-up).
+  const isTouch = ("ontouchstart" in window) || window.innerWidth<=880;
+  const ph=$("#pdfOpen");
+  if(ph){
+    if(isTouch){
+      ph.style.display="flex";
+      ph.querySelector("a").href=url;
+    }else{
+      ph.style.display="none";
+    }
+  }
 }
 
 /* endpoint do servidor; cai pra valor salvo se SERVER_URL estiver vazio */
@@ -1054,6 +1104,34 @@ async function importZip(file){
   toast(Object.keys(files).length+" arquivos + "+Object.keys(binaries).length+" recursos");
 }
 
+/* ---------- 7f-bis. importar arquivo(s) individual(is) ---------- */
+function readFileAsText(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(r.error);r.readAsText(file);});}
+function readFileAsBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(",")[1]||"");r.onerror=()=>rej(r.error);r.readAsDataURL(file);});}
+
+async function importFiles(fileList){
+  const list=Array.from(fileList||[]);
+  if(!list.length)return;
+  // pasta destino opcional (útil pra imagens referenciadas como images/foo.png)
+  const guess=Object.keys(binaries).find(p=>p.includes("/"))?.split("/")[0]
+            ||(Object.keys(files).some(p=>p.startsWith("images/"))?"images":"");
+  let dest=prompt("Pasta de destino (deixe vazio para a raiz):", guess||"");
+  if(dest===null)return;                  // cancelou
+  dest=dest.trim().replace(/^\/+|\/+$/g,"");
+  const prefix=dest?dest+"/":"";
+
+  let nt=0,nb=0;
+  for(const f of list){
+    const path=prefix+f.name;
+    if(isText(f.name)){ files[path]=await readFileAsText(f); nt++; }
+    else{ binaries[path]=await readFileAsBase64(f); nb++; }
+  }
+  await persistEverything();
+  rescanReferenced();
+  buildTree();
+  setDirty(true);
+  toast("Importado: "+nt+" texto(s) + "+nb+" recurso(s)");
+}
+
 /* ---------- 7g. exportar .zip ---------- */
 async function exportZip(){
   if(!window.JSZip){toast("Biblioteca de zip não carregou");return;}
@@ -1108,10 +1186,12 @@ $("#btnShare").onclick=()=>{closeAllDropdowns();shareProject();};
 $("#btnLogin").onclick=()=>{closeAllDropdowns();toggleLogin();};
 $("#btnExport").onclick=()=>{closeAllDropdowns();exportZip();};
 $("#btnImport").onclick=()=>{closeAllDropdowns();$("#zipInput").click();};
+$("#btnImportFile").onclick=()=>{closeAllDropdowns();$("#fileInput").click();};
 $("#btnRepo").onclick=()=>{closeAllDropdowns();configRepo();};
 $("#btnProjects").onclick=()=>{closeAllDropdowns();manageProjects();};
 $("#btnPull").onclick=()=>{closeAllDropdowns();pullFromGitHub();};
 $("#zipInput").onchange=e=>{const f=e.target.files[0];if(f)importZip(f).catch(err=>{console.error(err);toast("Erro ao ler zip");});e.target.value="";};
+$("#fileInput").onchange=e=>{const fs=e.target.files;if(fs&&fs.length)importFiles(fs).catch(err=>{console.error(err);toast("Erro ao importar");});e.target.value="";};
 
 document.addEventListener("keydown",e=>{
   if((e.ctrlKey||e.metaKey)&&e.key==="s"){e.preventDefault();reviewMode?saveRevision():saveAll();}
